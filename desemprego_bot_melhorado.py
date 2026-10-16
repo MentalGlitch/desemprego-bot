@@ -1,8 +1,14 @@
 import ctypes
+import json
+import os
 import random
+import subprocess
 import sys
+import threading
 import tkinter as tk
 from pathlib import Path
+from tkinter import messagebox
+from urllib.request import Request, urlopen
 
 from PIL import Image, ImageTk
 import pygame
@@ -29,6 +35,11 @@ def obter_pasta_programa():
 
 
 CAMINHO_BASE = obter_pasta_programa()
+PASTA_INSTALACAO = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else CAMINHO_BASE
+)
 PASTA_AUDIOS = CAMINHO_BASE / "audios"
 PASTA_RECURSOS = CAMINHO_BASE / "programa_image"
 CAMINHO_IMAGEM_POPUP = CAMINHO_BASE / "imagem.png"
@@ -49,6 +60,8 @@ COR_TEXTO = "#f4e7ff"
 COR_TEXTO_SECUNDARIO = "#e3cdfb"
 COR_BRANCO = "#fffaff"
 FONTE_PRINCIPAL = "Trebuchet MS"
+VERSAO_ATUAL = "1.0.0"
+REPOSITORIO_GITHUB = "MentalGlitch/desemprego-bot"
 
 pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)
 try:
@@ -217,6 +230,74 @@ def mostrar_popup_perfeito(duracao_ms, som_obj, ao_terminar=None):
     popup.bind("<Double-Button-1>", fechar)
     canvas.bind("<Double-Button-1>", fechar)
     popup.after(10, animar)
+
+
+def versao_numerica(valor):
+    try:
+        return tuple(int(parte) for parte in valor.lstrip("vV").split(".")[:3])
+    except (AttributeError, TypeError, ValueError):
+        return (0, 0, 0)
+
+
+def verificar_atualizacao(root):
+    """Consulta a Release pública sem travar a interface principal."""
+    def consultar():
+        try:
+            url_api = f"https://api.github.com/repos/{REPOSITORIO_GITHUB}/releases/latest"
+            requisicao = Request(url_api, headers={"User-Agent": "Desemprego-Bot"})
+            with urlopen(requisicao, timeout=8) as resposta:
+                release = json.loads(resposta.read().decode("utf-8"))
+
+            versao_nova = release.get("tag_name", "")
+            if versao_numerica(versao_nova) <= versao_numerica(VERSAO_ATUAL):
+                return
+
+            assets = release.get("assets", [])
+            asset_zip = next(
+                (asset for asset in assets if asset.get("name", "").lower().endswith(".zip")),
+                None,
+            )
+            if not asset_zip:
+                return
+
+            root.after(0, lambda: oferecer_atualizacao(
+                root, versao_nova, asset_zip["browser_download_url"]
+            ))
+        except Exception as erro:
+            print(f"Verificação de atualização ignorada: {erro}")
+
+    threading.Thread(target=consultar, daemon=True).start()
+
+
+def oferecer_atualizacao(root, versao_nova, url_download):
+    resposta = messagebox.askyesno(
+        "Atualização disponível",
+        f"A versão {versao_nova} do Desemprego Bot está disponível.\n\n"
+        "Deseja baixar e instalar agora?",
+        parent=root,
+    )
+    if not resposta:
+        return
+
+    atualizador = PASTA_INSTALACAO / "Atualizador.exe"
+    executavel_atual = Path(sys.executable).resolve()
+    if not atualizador.exists():
+        messagebox.showwarning(
+            "Atualizador ausente",
+            "Esta instalação não contém o Atualizador.exe.\n"
+            "Baixe a próxima versão completa pela Release.",
+            parent=root,
+        )
+        return
+
+    subprocess.Popen([
+        str(atualizador),
+        "--pid", str(os.getpid()),
+        "--url", url_download,
+        "--target", str(PASTA_INSTALACAO),
+        "--restart", str(executavel_atual),
+    ], cwd=str(PASTA_INSTALACAO))
+    root.destroy()
 
 
 class AppAlarme:
@@ -494,4 +575,6 @@ class AppAlarme:
 if __name__ == "__main__":
     root = tk.Tk()
     app = AppAlarme(root)
+    # A consulta roda em segundo plano e não impede o programa de abrir.
+    root.after(1500, lambda: verificar_atualizacao(root))
     root.mainloop()
