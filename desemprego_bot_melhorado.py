@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import messagebox
 from urllib.request import Request, urlopen
@@ -50,6 +51,7 @@ CAMINHO_LOGO = PASTA_RECURSOS / "logo.png"
 CAMINHO_BOTAO1 = PASTA_RECURSOS / "botao1.png"
 CAMINHO_BOTAO2 = PASTA_RECURSOS / "botao2.png"
 CAMINHO_ICONE = PASTA_RECURSOS / "icon.ico"
+CAMINHO_CONFIG_ICON = PASTA_RECURSOS / "config.png"
 
 LARGURA_JANELA = 466
 # Área de conteúdo mais compacta; a barra de título do Windows fica fora dela.
@@ -62,27 +64,44 @@ COR_TEXTO = "#f4e7ff"
 COR_TEXTO_SECUNDARIO = "#e3cdfb"
 COR_BRANCO = "#fffaff"
 FONTE_PRINCIPAL = "Trebuchet MS"
-VERSAO_ATUAL = "1.0.2"
+VERSAO_ATUAL = "1.0.3"
 REPOSITORIO_GITHUB = "MentalGlitch/desemprego-bot"
 VOLUME_CLICK = 0.45
+TEMPO_PADRAO = "10"
+CONFIG_PADRAO = {
+    "config_versao": 2,
+    "volume": 1.0,
+    "sons_interface": True,
+    "evitar_repeticao": False,
+    "guardar_ultimo_tempo": False,
+    "ultimo_tempo": TEMPO_PADRAO,
+}
 
 
-def carregar_ultimo_tempo():
+def carregar_configuracoes():
     try:
         with CAMINHO_CONFIG.open("r", encoding="utf-8") as arquivo:
-            valor = json.load(arquivo).get("ultimo_tempo", "10")
-            return str(valor) if valor else "10"
+            dados = json.load(arquivo)
+            if not isinstance(dados, dict) or dados.get("config_versao") != CONFIG_PADRAO["config_versao"]:
+                return CONFIG_PADRAO.copy()
+            configuracoes = CONFIG_PADRAO.copy()
+            configuracoes.update(dados if isinstance(dados, dict) else {})
+            configuracoes["volume"] = max(0.0, min(1.0, float(configuracoes["volume"])))
+            return configuracoes
     except (OSError, ValueError, TypeError):
-        return "10"
+        return CONFIG_PADRAO.copy()
 
 
-def salvar_ultimo_tempo(valor):
+CONFIGURACOES = carregar_configuracoes()
+
+
+def salvar_configuracoes():
     try:
         PASTA_CONFIG.mkdir(parents=True, exist_ok=True)
         with CAMINHO_CONFIG.open("w", encoding="utf-8") as arquivo:
-            json.dump({"ultimo_tempo": str(valor)}, arquivo, ensure_ascii=False, indent=2)
+            json.dump(CONFIGURACOES, arquivo, ensure_ascii=False, indent=2)
     except OSError as erro:
-        print(f"Aviso: não foi possível salvar o último tempo: {erro}")
+        print(f"Aviso: não foi possível salvar as configurações: {erro}")
 
 pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)
 try:
@@ -118,9 +137,9 @@ som_click = carregar_som_interface("Click.mp3")
 
 
 def tocar_click():
-    if som_click:
+    if som_click and CONFIGURACOES.get("sons_interface", True):
         try:
-            som_click.set_volume(VOLUME_CLICK)
+            som_click.set_volume(float(CONFIGURACOES.get("volume", VOLUME_CLICK)))
             som_click.play()
         except pygame.error as erro:
             print(f"Aviso: não foi possível tocar Click.mp3: {erro}")
@@ -210,6 +229,7 @@ def mostrar_popup_perfeito(duracao_ms, som_obj, ao_terminar=None):
     canvas.image = imagem_tk
 
     try:
+        som_obj.set_volume(float(CONFIGURACOES.get("volume", VOLUME_CLICK)))
         canal = som_obj.play()
     except pygame.error:
         canal = None
@@ -352,7 +372,10 @@ class AppAlarme:
         self.root.geometry(f"{LARGURA_JANELA}x{ALTURA_JANELA}")
         self.root.resizable(False, False)
         self.contagem_id = None
-        self.ultimo_tempo = carregar_ultimo_tempo()
+        self.alarme_ativo = False
+        self.ultimo_audio = None
+        self.ultimo_tempo = str(CONFIGURACOES.get("ultimo_tempo", TEMPO_PADRAO)) \
+            if CONFIGURACOES.get("guardar_ultimo_tempo", False) else TEMPO_PADRAO
         self.root.protocol("WM_DELETE_WINDOW", self.fechar_app)
 
         # Abre sempre centralizado na tela, em vez de usar uma posição aleatória.
@@ -380,6 +403,29 @@ class AppAlarme:
                                 bg="#7625d2", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.create_image(0, 0, image=self.fundo_tk, anchor="nw")
+
+        try:
+            self.config_original = Image.open(CAMINHO_CONFIG_ICON).convert("RGBA")
+            imagem_config = self.config_original.copy()
+            imagem_config.thumbnail((54, 54), Image.Resampling.LANCZOS)
+            self.config_tk = ImageTk.PhotoImage(imagem_config)
+            self.config_hover_after = None
+            self.config_item = self.canvas.create_image(
+                LARGURA_JANELA - 38, 38, image=self.config_tk, anchor="center",
+                tags=("config_visual",)
+            )
+            self.canvas.tag_bind(self.config_item, "<Enter>", lambda _event: self.iniciar_hover_config())
+            self.canvas.tag_bind(self.config_item, "<Leave>", lambda _event: self.finalizar_hover_config())
+        except Exception as erro:
+            print(f"Aviso: config.png não encontrada ou inválida: {erro}")
+            self.config_tk = None
+            self.config_original = None
+            self.config_hover_after = None
+            self.config_item = self.canvas.create_text(
+                LARGURA_JANELA - 14, 14, text="⚙", anchor="ne",
+                fill=COR_BRANCO, font=(FONTE_PRINCIPAL, 24, "normal")
+            )
+        self.canvas.tag_bind(self.config_item, "<Button-1>", lambda _event: self.abrir_configuracoes())
 
         self.logo_tk = None
         try:
@@ -451,8 +497,8 @@ class AppAlarme:
             font=(FONTE_PRINCIPAL, 12, "normal"),
             tags=("botao2_visual",),
         )
-        self.canvas.tag_bind(self.botao2_item, "<Button-1>", lambda _event: self.iniciar_contagem())
-        self.canvas.tag_bind(self.texto_tocar_item, "<Button-1>", lambda _event: self.iniciar_contagem())
+        self.canvas.tag_bind(self.botao2_item, "<Button-1>", lambda _event: self.acionar_botao_alarme())
+        self.canvas.tag_bind(self.texto_tocar_item, "<Button-1>", lambda _event: self.acionar_botao_alarme())
         self.canvas.tag_bind(self.botao2_item, "<Enter>", lambda _event: self.iniciar_hover_botao2())
         self.canvas.tag_bind(self.texto_tocar_item, "<Enter>", lambda _event: self.iniciar_hover_botao2())
         self.canvas.tag_bind(self.botao2_item, "<Leave>", lambda _event: self.finalizar_hover_botao2())
@@ -478,6 +524,27 @@ class AppAlarme:
             return f"#{r:02x}{g:02x}{b:02x}"
         except Exception:
             return "#8b4cde"
+
+    def atualizar_hover_config(self, escala):
+        if self.config_original is None:
+            return
+        imagem = self.config_original.copy()
+        tamanho = max(32, round(54 * escala))
+        imagem.thumbnail((tamanho, tamanho), Image.Resampling.LANCZOS)
+        self.config_tk = ImageTk.PhotoImage(imagem)
+        self.canvas.itemconfigure(self.config_item, image=self.config_tk)
+        self.canvas.coords(self.config_item, LARGURA_JANELA - 38, 38)
+        self.config_hover_after = None
+
+    def iniciar_hover_config(self):
+        if self.config_original is not None:
+            self.config_hover_after = self.root.after(1, lambda: self.atualizar_hover_config(1.22))
+
+    def finalizar_hover_config(self):
+        if self.config_original is not None:
+            if self.config_hover_after:
+                self.root.after_cancel(self.config_hover_after)
+            self.config_hover_after = self.root.after(1, lambda: self.atualizar_hover_config(1.0))
 
     def atualizar_hover(self, nome):
         """Amplia a arte suavemente, preservando o centro e o texto alinhado."""
@@ -564,7 +631,8 @@ class AppAlarme:
         self.canvas.itemconfigure(self.botao1_item, state=estado)
         self.controles_visiveis = visivel
         if visivel:
-            self.canvas.itemconfigure(self.titulo_status_item, text="Tempo do alarme:")
+            self.canvas.itemconfigure(self.titulo_status_item, text="Tempo do alarme:",
+                                      font=(FONTE_PRINCIPAL, 23, "normal"))
             self.canvas.itemconfigure(self.exemplo_item, state="normal")
             self.aplicar_escala_hover("botao1", self.hover_escala["botao1"])
         else:
@@ -573,17 +641,233 @@ class AppAlarme:
             self.entry_tempo.place_forget()
 
     def restaurar_controles(self):
+        self.alarme_ativo = False
         self.definir_visibilidade_botao1(True)
         self.entry_tempo.config(state="normal")
         self.definir_visibilidade_botao2(True)
+        self.canvas.itemconfigure(self.texto_tocar_item, text="Tocar", fill=COR_BRANCO,
+                                  font=(FONTE_PRINCIPAL, 12, "normal"))
 
     def fechar_app(self):
         valor = self.entry_tempo.get().strip()
-        if valor and valor not in ("inválido", "sem áudio"):
-            salvar_ultimo_tempo(valor)
+        if CONFIGURACOES.get("guardar_ultimo_tempo", False) and valor and valor not in ("inválido", "sem áudio"):
+            CONFIGURACOES["ultimo_tempo"] = valor
+            salvar_configuracoes()
         self.root.destroy()
 
+    def abrir_configuracoes(self):
+        tocar_click()
+        janela = tk.Toplevel(self.root)
+        janela.title("Configurações")
+        janela.geometry("330x350")
+        janela.resizable(False, False)
+        janela.transient(self.root)
+        janela.grab_set()
+        janela.update_idletasks()
+        pos_x = self.root.winfo_rootx() + (self.root.winfo_width() - janela.winfo_width()) // 2
+        pos_y = self.root.winfo_rooty() + (self.root.winfo_height() - janela.winfo_height()) // 2
+        janela.geometry(f"+{pos_x}+{pos_y}")
+        try:
+            janela.attributes("-alpha", 0.97)
+        except tk.TclError:
+            pass
+
+        fundo = "#35105f"
+        janela.configure(bg=fundo)
+        tk.Label(janela, text="Preferências", bg=fundo, fg=COR_BRANCO,
+                 font=(FONTE_PRINCIPAL, 18, "normal")).pack(pady=(18, 8))
+
+        volume_var = tk.DoubleVar(value=CONFIGURACOES.get("volume", 1.0) * 100)
+        tk.Label(janela, text="Volume dos áudios", bg=fundo, fg=COR_TEXTO,
+                 font=(FONTE_PRINCIPAL, 11, "normal")).pack()
+        volume_label = tk.Label(janela, bg=fundo, fg=COR_TEXTO_SECUNDARIO,
+                                font=(FONTE_PRINCIPAL, 9, "normal"))
+        volume_label.pack()
+        barra = tk.Canvas(janela, width=270, height=34, bg=fundo, highlightthickness=0)
+        barra.pack(pady=(2, 8))
+        inicio_barra, fim_barra = 18, 252
+        barra.create_rectangle(inicio_barra, 11, fim_barra, 23, fill="#43176f", outline="")
+        preenchimento = barra.create_rectangle(inicio_barra, 11, inicio_barra, 23,
+                                               fill="#bd7cff", outline="")
+        marcador = barra.create_oval(0, 5, 0, 29, fill="#f1d9ff", outline="#9b54e6", width=2)
+
+        def atualizar_barra_volume(valor=None):
+            percentual = max(0.0, min(100.0, float(volume_var.get() if valor is None else valor)))
+            volume_var.set(percentual)
+            x = inicio_barra + (fim_barra - inicio_barra) * percentual / 100
+            barra.coords(preenchimento, inicio_barra, 11, max(inicio_barra, x), 23)
+            barra.coords(marcador, x - 8, 5, x + 8, 29)
+            volume_label.config(text=f"{round(percentual)}%")
+
+        def arrastar_volume(event):
+            percentual = (event.x - inicio_barra) / (fim_barra - inicio_barra) * 100
+            atualizar_barra_volume(percentual)
+
+        barra.bind("<Button-1>", arrastar_volume)
+        barra.bind("<B1-Motion>", arrastar_volume)
+        atualizar_barra_volume()
+
+        interface_var = tk.BooleanVar(value=CONFIGURACOES.get("sons_interface", True))
+        repetir_var = tk.BooleanVar(value=CONFIGURACOES.get("evitar_repeticao", False))
+        guardar_var = tk.BooleanVar(value=CONFIGURACOES.get("guardar_ultimo_tempo", False))
+        opcoes = (
+            (interface_var, "Ativar sons dos botões"),
+            (repetir_var, "Evitar repetir o último áudio"),
+            (guardar_var, "Lembrar o último tempo usado"),
+        )
+        for variavel, texto in opcoes:
+            tk.Checkbutton(janela, text=texto, variable=variavel, bg=fundo,
+                           fg=COR_TEXTO, selectcolor="#5b2291", activebackground=fundo,
+                           activeforeground=COR_BRANCO, font=(FONTE_PRINCIPAL, 10, "normal")
+                           ).pack(anchor="w", padx=45, pady=3)
+
+        tk.Button(janela, text="Sobre o programa", command=lambda: (janela.grab_release(), janela.destroy(), self.abrir_sobre()),
+                  width=22, bg="#54207e", fg=COR_BRANCO, activebackground="#7737a6",
+                  relief="flat", font=(FONTE_PRINCIPAL, 10, "normal")).pack(pady=(8, 3))
+
+        botoes = tk.Frame(janela, bg=fundo)
+        botoes.pack(pady=10)
+
+        def salvar_e_fechar():
+            CONFIGURACOES["volume"] = max(0.0, min(1.0, volume_var.get() / 100))
+            CONFIGURACOES["sons_interface"] = interface_var.get()
+            CONFIGURACOES["evitar_repeticao"] = repetir_var.get()
+            CONFIGURACOES["guardar_ultimo_tempo"] = guardar_var.get()
+            if guardar_var.get():
+                valor_atual = self.entry_tempo.get().strip()
+                if converter_entrada_para_segundos(valor_atual) is not None:
+                    self.ultimo_tempo = valor_atual
+                    CONFIGURACOES["ultimo_tempo"] = valor_atual
+            else:
+                self.ultimo_tempo = TEMPO_PADRAO
+                CONFIGURACOES["ultimo_tempo"] = TEMPO_PADRAO
+            salvar_configuracoes()
+            janela.grab_release()
+            janela.destroy()
+
+        tk.Button(botoes, text="Salvar", command=salvar_e_fechar, width=10,
+                  bg="#7e35d2", fg=COR_BRANCO, activebackground="#a25bea",
+                  relief="flat", font=(FONTE_PRINCIPAL, 10, "normal")).pack(side="left", padx=5)
+        tk.Button(botoes, text="Cancelar", command=janela.destroy, width=10,
+                  bg="#54207e", fg=COR_BRANCO, activebackground="#7737a6",
+                  relief="flat", font=(FONTE_PRINCIPAL, 10, "normal")).pack(side="left", padx=5)
+        janela.protocol("WM_DELETE_WINDOW", janela.destroy)
+
+    def abrir_sobre(self):
+        janela = tk.Toplevel(self.root)
+        janela.title("Sobre o Desemprego Bot")
+        janela.geometry("410x430")
+        janela.resizable(False, False)
+        janela.transient(self.root)
+        janela.grab_set()
+        janela.update_idletasks()
+        pos_x = self.root.winfo_rootx() + (self.root.winfo_width() - janela.winfo_width()) // 2
+        pos_y = self.root.winfo_rooty() + (self.root.winfo_height() - janela.winfo_height()) // 2
+        janela.geometry(f"+{pos_x}+{pos_y}")
+        fundo = "#35105f"
+        janela.configure(bg=fundo)
+        janela.protocol("WM_DELETE_WINDOW", lambda: (janela.grab_release(), janela.destroy()))
+
+        try:
+            foto = Image.open(CAMINHO_IMAGEM_POPUP).convert("RGBA").copy()
+            foto.thumbnail((145, 145), Image.Resampling.LANCZOS)
+            foto_tk = ImageTk.PhotoImage(foto)
+            tk.Label(janela, image=foto_tk, bg=fundo).pack(pady=(12, 5))
+            janela.foto_sobre = foto_tk
+        except Exception:
+            pass
+
+        tk.Label(janela, text="Desemprego Bot", bg=fundo, fg=COR_BRANCO,
+                 font=(FONTE_PRINCIPAL, 18, "normal")).pack()
+        tk.Label(janela, text=f"Versão {VERSAO_ATUAL}", bg=fundo, fg=COR_TEXTO_SECUNDARIO,
+                 font=(FONTE_PRINCIPAL, 10, "normal")).pack(pady=(1, 7))
+        texto = (
+            "Alarme personalizável para tocar seus próprios áudios.\n"
+            "Escolha o tempo e aguarde a reprodução.\n\n"
+            "Criadora: Soryu"
+        )
+        tk.Label(janela, text=texto, justify="center", wraplength=330, bg=fundo,
+                 fg=COR_TEXTO, font=(FONTE_PRINCIPAL, 10, "normal")).pack(pady=3)
+        github = tk.Label(janela, text="GitHub: MentalGlitch/desemprego-bot",
+                          bg=fundo, fg="#d4a9ff", cursor="hand2",
+                          font=(FONTE_PRINCIPAL, 10, "underline"))
+        github.pack(pady=(3, 6))
+        github.bind("<Button-1>", lambda _event: webbrowser.open(
+            "https://github.com/MentalGlitch/desemprego-bot"
+        ))
+
+        rodape = tk.Frame(janela, bg=fundo)
+        rodape.pack(side="bottom", fill="x", padx=18, pady=12)
+        tk.Button(rodape, text="Fechar", command=lambda: (janela.grab_release(), janela.destroy()),
+                  width=12, bg="#54207e", fg=COR_BRANCO, activebackground="#7737a6",
+                  relief="flat", font=(FONTE_PRINCIPAL, 10, "normal")).pack(side="left")
+        tk.Button(rodape, text="Verificar versão", width=18,
+                  command=lambda: self.verificar_atualizacao_manual(janela),
+                  bg="#7e35d2", fg=COR_BRANCO, activebackground="#a25bea",
+                  relief="flat", font=(FONTE_PRINCIPAL, 10, "normal")).pack(side="right")
+
+    def verificar_atualizacao_manual(self, parent):
+        tocar_click()
+
+        def consultar():
+            try:
+                url_api = f"https://api.github.com/repos/{REPOSITORIO_GITHUB}/releases/latest"
+                requisicao = Request(url_api, headers={"User-Agent": "Desemprego-Bot"})
+                with urlopen(requisicao, timeout=8) as resposta:
+                    release = json.loads(resposta.read().decode("utf-8"))
+                versao_nova = release.get("tag_name", "")
+                if versao_numerica(versao_nova) > versao_numerica(VERSAO_ATUAL):
+                    asset = next((item for item in release.get("assets", [])
+                                  if item.get("name", "").lower().endswith(".zip")), None)
+                    if asset:
+                        parent.after(0, lambda: oferecer_atualizacao(
+                            self.root, versao_nova, asset["browser_download_url"]
+                        ))
+                        return
+                parent.after(0, lambda: messagebox.showinfo(
+                    "Atualizações", f"Você já está usando a versão mais recente: {VERSAO_ATUAL}.",
+                    parent=parent
+                ))
+            except Exception as erro:
+                parent.after(0, lambda: messagebox.showwarning(
+                    "Atualizações", "Não foi possível verificar agora. Tente novamente mais tarde.",
+                    parent=parent
+                ))
+                print(f"Verificação manual ignorada: {erro}")
+
+        threading.Thread(target=consultar, daemon=True).start()
+
+    def acionar_botao_alarme(self):
+        if self.alarme_ativo:
+            self.cancelar_alarme()
+        else:
+            self.iniciar_contagem()
+
+    def cancelar_alarme(self):
+        tocar_click()
+        if self.contagem_id is not None:
+            try:
+                self.root.after_cancel(self.contagem_id)
+            except tk.TclError:
+                pass
+            self.contagem_id = None
+        self.alarme_ativo = False
+        self.entry_tempo.config(state="normal")
+        self.entry_tempo.delete(0, tk.END)
+        self.ultimo_tempo = self.tempo_para_restaurar()
+        self.entry_tempo.insert(0, self.ultimo_tempo)
+        self.canvas.itemconfigure(self.texto_tocar_item, text="Tocar", fill=COR_BRANCO,
+                                  font=(FONTE_PRINCIPAL, 12, "normal"))
+        self.restaurar_controles()
+
+    def tempo_para_restaurar(self):
+        if CONFIGURACOES.get("guardar_ultimo_tempo", False):
+            return self.ultimo_tempo
+        return TEMPO_PADRAO
+
     def iniciar_contagem(self):
+        if self.alarme_ativo:
+            return
         if not audios_carregados:
             self.entry_tempo.delete(0, tk.END)
             self.entry_tempo.insert(0, "sem áudio")
@@ -600,8 +884,22 @@ class AppAlarme:
             return
 
         self.ultimo_tempo = self.entry_tempo.get().strip()
-        salvar_ultimo_tempo(self.ultimo_tempo)
-        self.definir_visibilidade_botao2(False)
+        self.alarme_ativo = True
+        if CONFIGURACOES.get("guardar_ultimo_tempo", False):
+            CONFIGURACOES["ultimo_tempo"] = self.ultimo_tempo
+            salvar_configuracoes()
+        self.canvas.itemconfigure(
+            self.titulo_status_item,
+            text="Alarme ativo",
+            font=(FONTE_PRINCIPAL, 18, "normal")
+        )
+        self.canvas.itemconfigure(
+            self.texto_tocar_item,
+            text="CANCELAR ALARME",
+            fill="#ffe66d",
+            font=(FONTE_PRINCIPAL, 13, "bold")
+        )
+        self.definir_visibilidade_botao2(True)
         self.entry_tempo.config(state="normal")
         self.contagem_regressiva(segundos)
 
@@ -618,13 +916,19 @@ class AppAlarme:
             self.contagem_id = self.root.after(1000, lambda: self.contagem_regressiva(restante - 1))
             return
 
-        som_path = random.choice(list(audios_carregados.keys()))
+        opcoes_audio = list(audios_carregados.keys())
+        if CONFIGURACOES.get("evitar_repeticao", False) and len(opcoes_audio) > 1:
+            opcoes_audio = [audio for audio in opcoes_audio if audio != self.ultimo_audio]
+        som_path = random.choice(opcoes_audio)
+        self.ultimo_audio = som_path
         som_obj = audios_carregados[som_path]
         duracao_ms = max(1000, int(duracoes_audios[som_path] * 1000))
         self.entry_tempo.config(state="normal")
         self.entry_tempo.delete(0, tk.END)
+        self.ultimo_tempo = self.tempo_para_restaurar()
         self.entry_tempo.insert(0, self.ultimo_tempo)
         # Os dois controles ficam fora da tela durante todo o áudio.
+        self.definir_visibilidade_botao2(False)
         self.definir_visibilidade_botao1(False)
         mostrar_popup_perfeito(duracao_ms, som_obj, self.restaurar_controles)
 
