@@ -40,6 +40,8 @@ PASTA_INSTALACAO = (
     if getattr(sys, "frozen", False)
     else CAMINHO_BASE
 )
+PASTA_CONFIG = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "DesempregoBot"
+CAMINHO_CONFIG = PASTA_CONFIG / "config.json"
 PASTA_AUDIOS = CAMINHO_BASE / "audios"
 PASTA_RECURSOS = CAMINHO_BASE / "programa_image"
 CAMINHO_IMAGEM_POPUP = CAMINHO_BASE / "imagem.png"
@@ -60,8 +62,27 @@ COR_TEXTO = "#f4e7ff"
 COR_TEXTO_SECUNDARIO = "#e3cdfb"
 COR_BRANCO = "#fffaff"
 FONTE_PRINCIPAL = "Trebuchet MS"
-VERSAO_ATUAL = "1.0.1"
+VERSAO_ATUAL = "1.0.2"
 REPOSITORIO_GITHUB = "MentalGlitch/desemprego-bot"
+VOLUME_CLICK = 0.45
+
+
+def carregar_ultimo_tempo():
+    try:
+        with CAMINHO_CONFIG.open("r", encoding="utf-8") as arquivo:
+            valor = json.load(arquivo).get("ultimo_tempo", "10")
+            return str(valor) if valor else "10"
+    except (OSError, ValueError, TypeError):
+        return "10"
+
+
+def salvar_ultimo_tempo(valor):
+    try:
+        PASTA_CONFIG.mkdir(parents=True, exist_ok=True)
+        with CAMINHO_CONFIG.open("w", encoding="utf-8") as arquivo:
+            json.dump({"ultimo_tempo": str(valor)}, arquivo, ensure_ascii=False, indent=2)
+    except OSError as erro:
+        print(f"Aviso: não foi possível salvar o último tempo: {erro}")
 
 pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)
 try:
@@ -82,32 +103,27 @@ for som_path in sons:
 
 
 def carregar_som_interface(nome):
-    try:
-        return pygame.mixer.Sound(str(PASTA_RECURSOS / nome))
-    except Exception as erro:
-        print(f"Aviso: som de interface {nome} não encontrado: {erro}")
-        return None
+    for pasta in (PASTA_RECURSOS, PASTA_AUDIOS):
+        caminho = pasta / nome
+        if caminho.exists():
+            try:
+                return pygame.mixer.Sound(str(caminho))
+            except Exception as erro:
+                print(f"Aviso: não foi possível carregar {caminho}: {erro}")
+    print(f"Aviso: som de interface {nome} não encontrado")
+    return None
 
 
-som_mouse_hover = carregar_som_interface("MouseHover.mp3")
 som_click = carregar_som_interface("Click.mp3")
-ultimo_hover_ms = 0
-
-
-def tocar_mouse_hover():
-    """Evita repetição ao atravessar texto/imagem, mas permite novo hover depois."""
-    global ultimo_hover_ms
-    if not som_mouse_hover:
-        return
-    agora = pygame.time.get_ticks()
-    if agora - ultimo_hover_ms >= 120:
-        som_mouse_hover.play()
-        ultimo_hover_ms = agora
 
 
 def tocar_click():
     if som_click:
-        som_click.play()
+        try:
+            som_click.set_volume(VOLUME_CLICK)
+            som_click.play()
+        except pygame.error as erro:
+            print(f"Aviso: não foi possível tocar Click.mp3: {erro}")
 
 
 def converter_entrada_para_segundos(entrada):
@@ -332,10 +348,12 @@ def oferecer_atualizacao(root, versao_nova, url_download):
 class AppAlarme:
     def __init__(self, root):
         self.root = root
-        self.root.title("Desemprego Bot")
+        self.root.title(f"Desemprego Bot v{VERSAO_ATUAL}")
         self.root.geometry(f"{LARGURA_JANELA}x{ALTURA_JANELA}")
         self.root.resizable(False, False)
         self.contagem_id = None
+        self.ultimo_tempo = carregar_ultimo_tempo()
+        self.root.protocol("WM_DELETE_WINDOW", self.fechar_app)
 
         # Abre sempre centralizado na tela, em vez de usar uma posição aleatória.
         self.root.update_idletasks()
@@ -346,7 +364,11 @@ class AppAlarme:
         self.root.geometry(f"{LARGURA_JANELA}x{ALTURA_JANELA}+{pos_x}+{pos_y}")
 
         try:
-            self.root.iconbitmap(CAMINHO_ICONE)
+            # O mesmo ICO aparece na barra de título e na barra de tarefas.
+            self.root.iconbitmap(default=str(CAMINHO_ICONE))
+            # Também aplica o ícone via Tk para o teste executando diretamente o .py.
+            self.icone_tk = ImageTk.PhotoImage(Image.open(CAMINHO_ICONE).convert("RGBA"))
+            self.root.iconphoto(True, self.icone_tk)
         except Exception:
             pass
 
@@ -385,7 +407,7 @@ class AppAlarme:
         self.botao1_y = 218
         self.botao1_item = self.canvas.create_image(
             self.botao1_x, self.botao1_y, image=self.botao1_tk, anchor="nw",
-            tags=("botao1_hover",)
+            tags=("botao1_visual",)
         )
 
         # Fundo aproximado apenas para o Entry nativo não criar um retângulo branco.
@@ -403,11 +425,11 @@ class AppAlarme:
             width=max(80, self.botao1_largura - 2 * margem_x),
             height=max(28, round(self.botao1_altura * 0.58)),
         )
-        self.entry_tempo.insert(0, "10")
+        self.entry_tempo.insert(0, self.ultimo_tempo)
         self.entry_tempo.bind("<Return>", lambda _event: self.iniciar_contagem())
-        self.entry_tempo.bind("<Enter>", lambda _event: (tocar_mouse_hover(), self.iniciar_hover_botao1()))
+        self.entry_tempo.bind("<Enter>", lambda _event: self.iniciar_hover_botao1())
         self.entry_tempo.bind("<Leave>", lambda _event: self.finalizar_hover_botao1())
-        self.canvas.tag_bind(self.botao1_item, "<Enter>", lambda _event: (tocar_mouse_hover(), self.iniciar_hover_botao1()))
+        self.canvas.tag_bind(self.botao1_item, "<Enter>", lambda _event: self.iniciar_hover_botao1())
         self.canvas.tag_bind(self.botao1_item, "<Leave>", lambda _event: self.finalizar_hover_botao1())
 
         # BOTAO 2: imagem + texto sobreposto; ambos desaparecem durante a contagem.
@@ -419,7 +441,7 @@ class AppAlarme:
         self.botao2_y = 285
         self.botao2_item = self.canvas.create_image(
             self.botao2_x, self.botao2_y, image=self.botao2_tk, anchor="nw",
-            tags=("botao2_hover",)
+            tags=("botao2_visual",)
         )
         self.texto_tocar_item = self.canvas.create_text(
             LARGURA_JANELA // 2,
@@ -427,12 +449,12 @@ class AppAlarme:
             text="Tocar",
             fill=COR_BRANCO,
             font=(FONTE_PRINCIPAL, 12, "normal"),
-            tags=("botao2_hover",),
+            tags=("botao2_visual",),
         )
         self.canvas.tag_bind(self.botao2_item, "<Button-1>", lambda _event: self.iniciar_contagem())
         self.canvas.tag_bind(self.texto_tocar_item, "<Button-1>", lambda _event: self.iniciar_contagem())
-        self.canvas.tag_bind(self.botao2_item, "<Enter>", lambda _event: (tocar_mouse_hover(), self.iniciar_hover_botao2()))
-        self.canvas.tag_bind(self.texto_tocar_item, "<Enter>", lambda _event: (tocar_mouse_hover(), self.iniciar_hover_botao2()))
+        self.canvas.tag_bind(self.botao2_item, "<Enter>", lambda _event: self.iniciar_hover_botao2())
+        self.canvas.tag_bind(self.texto_tocar_item, "<Enter>", lambda _event: self.iniciar_hover_botao2())
         self.canvas.tag_bind(self.botao2_item, "<Leave>", lambda _event: self.finalizar_hover_botao2())
         self.canvas.tag_bind(self.texto_tocar_item, "<Leave>", lambda _event: self.finalizar_hover_botao2())
 
@@ -444,6 +466,7 @@ class AppAlarme:
         self.hover_alvo = {"botao1": 1.0, "botao2": 1.0}
         self.hover_escala = {"botao1": 1.0, "botao2": 1.0}
         self.hover_after = {"botao1": None, "botao2": None}
+        self.controles_visiveis = True
 
     @staticmethod
     def cor_central(imagem):
@@ -456,8 +479,8 @@ class AppAlarme:
         except Exception:
             return "#8b4cde"
 
-    def atualizar_hover(self, nome, tag, centro_x, centro_y):
-        """Redimensiona a arte de verdade, mantendo o centro exatamente fixo."""
+    def atualizar_hover(self, nome):
+        """Amplia a arte suavemente, preservando o centro e o texto alinhado."""
         alvo = self.hover_alvo[nome]
         atual = self.hover_escala[nome]
         diferenca = alvo - atual
@@ -469,38 +492,34 @@ class AppAlarme:
         nova_escala = atual + diferenca * 0.28
         self.hover_escala[nome] = nova_escala
         self.aplicar_escala_hover(nome, nova_escala)
-        self.hover_after[nome] = self.root.after(
-            16, lambda: self.atualizar_hover(nome, tag, centro_x, centro_y)
-        )
+        self.hover_after[nome] = self.root.after(16, lambda: self.atualizar_hover(nome))
 
     def aplicar_escala_hover(self, nome, escala):
-        """Troca por uma versão maior/menor do PNG e reposiciona pelo centro."""
         if nome == "botao1":
-            imagem_original = self.botao1_original
-            largura = max(1, round(imagem_original.width * escala))
-            altura = max(1, round(imagem_original.height * escala))
-            imagem = imagem_original.resize((largura, altura), Image.Resampling.LANCZOS)
-            self.botao1_tk = ImageTk.PhotoImage(imagem)
+            original = self.botao1_original
+            largura = max(1, round(original.width * escala))
+            altura = max(1, round(original.height * escala))
+            self.botao1_tk = ImageTk.PhotoImage(original.resize(
+                (largura, altura), Image.Resampling.LANCZOS
+            ))
             x = (LARGURA_JANELA - largura) // 2
             y = self.botao1_y + (self.botao1_altura - altura) // 2
             self.canvas.itemconfigure(self.botao1_item, image=self.botao1_tk)
             self.canvas.coords(self.botao1_item, x, y)
-
             margem_x = max(18, round(largura * 0.10))
             self.entry_tempo.place(
-                x=x + margem_x,
-                y=y + max(4, altura // 5),
+                x=x + margem_x, y=y + max(4, altura // 5),
                 width=max(80, largura - 2 * margem_x),
                 height=max(28, round(altura * 0.58)),
             )
-            tamanho_fonte = max(12, round(16 * escala))
-            self.entry_tempo.config(font=(FONTE_PRINCIPAL, tamanho_fonte, "normal"))
+            self.entry_tempo.config(font=(FONTE_PRINCIPAL, max(12, round(16 * escala)), "normal"))
         else:
-            imagem_original = self.botao2_original
-            largura = max(1, round(imagem_original.width * escala))
-            altura = max(1, round(imagem_original.height * escala))
-            imagem = imagem_original.resize((largura, altura), Image.Resampling.LANCZOS)
-            self.botao2_tk = ImageTk.PhotoImage(imagem)
+            original = self.botao2_original
+            largura = max(1, round(original.width * escala))
+            altura = max(1, round(original.height * escala))
+            self.botao2_tk = ImageTk.PhotoImage(original.resize(
+                (largura, altura), Image.Resampling.LANCZOS
+            ))
             x = (LARGURA_JANELA - largura) // 2
             y = self.botao2_y + (self.botao2_altura - altura) // 2
             self.canvas.itemconfigure(self.botao2_item, image=self.botao2_tk)
@@ -508,36 +527,32 @@ class AppAlarme:
             self.canvas.coords(self.texto_tocar_item,
                                LARGURA_JANELA // 2,
                                self.botao2_y + self.botao2_altura / 2)
-            self.canvas.itemconfigure(
-                self.texto_tocar_item,
-                font=(FONTE_PRINCIPAL, max(12, round(12 * escala)), "normal")
-            )
+            self.canvas.itemconfigure(self.texto_tocar_item,
+                                      font=(FONTE_PRINCIPAL, max(12, round(12 * escala)), "normal"))
 
     def iniciar_hover_botao1(self):
-        self.hover_alvo["botao1"] = 1.03
-        self._iniciar_animacao_hover("botao1", "botao1_hover", self.botao1_x + self.botao1_largura / 2,
-                                     self.botao1_y + self.botao1_altura / 2)
+        if self.controles_visiveis:
+            self.hover_alvo["botao1"] = 1.03
+            self.iniciar_animacao_hover("botao1")
 
     def finalizar_hover_botao1(self):
         self.hover_alvo["botao1"] = 1.0
-        self._iniciar_animacao_hover("botao1", "botao1_hover", self.botao1_x + self.botao1_largura / 2,
-                                     self.botao1_y + self.botao1_altura / 2)
+        self.iniciar_animacao_hover("botao1")
 
     def iniciar_hover_botao2(self):
-        self.root.config(cursor="hand2")
-        self.hover_alvo["botao2"] = 1.04
-        self._iniciar_animacao_hover("botao2", "botao2_hover", self.botao2_x + self.botao2_largura / 2,
-                                     self.botao2_y + self.botao2_altura / 2)
+        if self.controles_visiveis:
+            self.root.config(cursor="hand2")
+            self.hover_alvo["botao2"] = 1.04
+            self.iniciar_animacao_hover("botao2")
 
     def finalizar_hover_botao2(self):
         self.root.config(cursor="")
         self.hover_alvo["botao2"] = 1.0
-        self._iniciar_animacao_hover("botao2", "botao2_hover", self.botao2_x + self.botao2_largura / 2,
-                                     self.botao2_y + self.botao2_altura / 2)
+        self.iniciar_animacao_hover("botao2")
 
-    def _iniciar_animacao_hover(self, nome, tag, centro_x, centro_y):
+    def iniciar_animacao_hover(self, nome):
         if self.hover_after[nome] is None:
-            self.atualizar_hover(nome, tag, centro_x, centro_y)
+            self.atualizar_hover(nome)
 
     def definir_visibilidade_botao2(self, visivel):
         estado = "normal" if visivel else "hidden"
@@ -547,6 +562,7 @@ class AppAlarme:
     def definir_visibilidade_botao1(self, visivel):
         estado = "normal" if visivel else "hidden"
         self.canvas.itemconfigure(self.botao1_item, state=estado)
+        self.controles_visiveis = visivel
         if visivel:
             self.canvas.itemconfigure(self.titulo_status_item, text="Tempo do alarme:")
             self.canvas.itemconfigure(self.exemplo_item, state="normal")
@@ -560,6 +576,12 @@ class AppAlarme:
         self.definir_visibilidade_botao1(True)
         self.entry_tempo.config(state="normal")
         self.definir_visibilidade_botao2(True)
+
+    def fechar_app(self):
+        valor = self.entry_tempo.get().strip()
+        if valor and valor not in ("inválido", "sem áudio"):
+            salvar_ultimo_tempo(valor)
+        self.root.destroy()
 
     def iniciar_contagem(self):
         if not audios_carregados:
@@ -577,6 +599,8 @@ class AppAlarme:
             self.entry_tempo.insert(0, "inválido")
             return
 
+        self.ultimo_tempo = self.entry_tempo.get().strip()
+        salvar_ultimo_tempo(self.ultimo_tempo)
         self.definir_visibilidade_botao2(False)
         self.entry_tempo.config(state="normal")
         self.contagem_regressiva(segundos)
@@ -599,7 +623,7 @@ class AppAlarme:
         duracao_ms = max(1000, int(duracoes_audios[som_path] * 1000))
         self.entry_tempo.config(state="normal")
         self.entry_tempo.delete(0, tk.END)
-        self.entry_tempo.insert(0, "10")
+        self.entry_tempo.insert(0, self.ultimo_tempo)
         # Os dois controles ficam fora da tela durante todo o áudio.
         self.definir_visibilidade_botao1(False)
         mostrar_popup_perfeito(duracao_ms, som_obj, self.restaurar_controles)
