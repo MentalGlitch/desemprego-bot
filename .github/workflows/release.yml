@@ -34,6 +34,7 @@ jobs:
         run: |
           $necessarios = @(
             "desemprego_bot_melhorado.py",
+            "atualizador.py",
             "imagem.png",
             "audios",
             "programa_image",
@@ -57,6 +58,14 @@ jobs:
             --add-data "programa_image;programa_image" `
             --add-data "imagem.png;." `
             "desemprego_bot_melhorado.py"
+
+      - name: Compilar atualizador
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --noconsole --onefile `
+            --name "Atualizador" `
+            "atualizador.py"
+          Copy-Item "dist\Atualizador.exe" "dist\Desemprego Bot\Atualizador.exe"
 
       - name: Compactar programa completo
         shell: pwsh
