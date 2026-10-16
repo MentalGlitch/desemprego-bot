@@ -60,7 +60,7 @@ COR_TEXTO = "#f4e7ff"
 COR_TEXTO_SECUNDARIO = "#e3cdfb"
 COR_BRANCO = "#fffaff"
 FONTE_PRINCIPAL = "Trebuchet MS"
-VERSAO_ATUAL = "1.0.0"
+VERSAO_ATUAL = "1.0.1"
 REPOSITORIO_GITHUB = "MentalGlitch/desemprego-bot"
 
 pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=512)
@@ -79,6 +79,35 @@ for som_path in sons:
         duracoes_audios[som_path] = som.get_length()
     except Exception as erro:
         print(f"Erro ao carregar {som_path.name}: {erro}")
+
+
+def carregar_som_interface(nome):
+    try:
+        return pygame.mixer.Sound(str(PASTA_RECURSOS / nome))
+    except Exception as erro:
+        print(f"Aviso: som de interface {nome} não encontrado: {erro}")
+        return None
+
+
+som_mouse_hover = carregar_som_interface("MouseHover.mp3")
+som_click = carregar_som_interface("Click.mp3")
+ultimo_hover_ms = 0
+
+
+def tocar_mouse_hover():
+    """Evita repetição ao atravessar texto/imagem, mas permite novo hover depois."""
+    global ultimo_hover_ms
+    if not som_mouse_hover:
+        return
+    agora = pygame.time.get_ticks()
+    if agora - ultimo_hover_ms >= 120:
+        som_mouse_hover.play()
+        ultimo_hover_ms = agora
+
+
+def tocar_click():
+    if som_click:
+        som_click.play()
 
 
 def converter_entrada_para_segundos(entrada):
@@ -376,9 +405,9 @@ class AppAlarme:
         )
         self.entry_tempo.insert(0, "10")
         self.entry_tempo.bind("<Return>", lambda _event: self.iniciar_contagem())
-        self.entry_tempo.bind("<Enter>", lambda _event: self.iniciar_hover_botao1())
+        self.entry_tempo.bind("<Enter>", lambda _event: (tocar_mouse_hover(), self.iniciar_hover_botao1()))
         self.entry_tempo.bind("<Leave>", lambda _event: self.finalizar_hover_botao1())
-        self.canvas.tag_bind(self.botao1_item, "<Enter>", lambda _event: self.iniciar_hover_botao1())
+        self.canvas.tag_bind(self.botao1_item, "<Enter>", lambda _event: (tocar_mouse_hover(), self.iniciar_hover_botao1()))
         self.canvas.tag_bind(self.botao1_item, "<Leave>", lambda _event: self.finalizar_hover_botao1())
 
         # BOTAO 2: imagem + texto sobreposto; ambos desaparecem durante a contagem.
@@ -402,8 +431,8 @@ class AppAlarme:
         )
         self.canvas.tag_bind(self.botao2_item, "<Button-1>", lambda _event: self.iniciar_contagem())
         self.canvas.tag_bind(self.texto_tocar_item, "<Button-1>", lambda _event: self.iniciar_contagem())
-        self.canvas.tag_bind(self.botao2_item, "<Enter>", lambda _event: self.iniciar_hover_botao2())
-        self.canvas.tag_bind(self.texto_tocar_item, "<Enter>", lambda _event: self.iniciar_hover_botao2())
+        self.canvas.tag_bind(self.botao2_item, "<Enter>", lambda _event: (tocar_mouse_hover(), self.iniciar_hover_botao2()))
+        self.canvas.tag_bind(self.texto_tocar_item, "<Enter>", lambda _event: (tocar_mouse_hover(), self.iniciar_hover_botao2()))
         self.canvas.tag_bind(self.botao2_item, "<Leave>", lambda _event: self.finalizar_hover_botao2())
         self.canvas.tag_bind(self.texto_tocar_item, "<Leave>", lambda _event: self.finalizar_hover_botao2())
 
@@ -537,6 +566,10 @@ class AppAlarme:
             self.entry_tempo.delete(0, tk.END)
             self.entry_tempo.insert(0, "sem áudio")
             return
+
+        # O clique acontece somente ao iniciar uma nova contagem.
+        # Durante a contagem e durante a reprodução os controles ficam ocultos.
+        tocar_click()
 
         segundos = converter_entrada_para_segundos(self.entry_tempo.get())
         if segundos is None:
