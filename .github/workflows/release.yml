@@ -1,0 +1,74 @@
+name: Compilar e publicar Desemprego Bot
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Necessário para o workflow criar uma Release no próprio repositório.
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Verificar arquivos necessários
+        shell: pwsh
+        run: |
+          $necessarios = @(
+            "desemprego_bot_melhorado.py",
+            "imagem.png",
+            "audios",
+            "programa_image",
+            "programa_image\icon.ico"
+          )
+
+          foreach ($item in $necessarios) {
+            if (-not (Test-Path $item)) {
+              throw "Arquivo ou pasta obrigatória não encontrada: $item"
+            }
+          }
+
+      - name: Compilar programa
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --noconsole --onedir `
+            --name "Desemprego Bot" `
+            --icon "programa_image\icon.ico" `
+            --collect-all pygame `
+            --add-data "audios;audios" `
+            --add-data "programa_image;programa_image" `
+            --add-data "imagem.png;." `
+            "desemprego_bot_melhorado.py"
+
+      - name: Compactar programa completo
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "dist\Desemprego Bot" `
+            -DestinationPath "Desemprego-Bot-${{ github.ref_name }}-Windows.zip"
+
+      - name: Publicar Release automaticamente
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Desemprego Bot ${{ github.ref_name }}
+          generate_release_notes: true
+          files: Desemprego-Bot-${{ github.ref_name }}-Windows.zip
