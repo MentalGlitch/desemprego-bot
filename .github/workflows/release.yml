@@ -72,7 +72,7 @@ jobs:
         run: |
           Compress-Archive `
             -Path "dist\Desemprego Bot" `
-            -DestinationPath "Desemprego-Bot-${{ github.ref_name }}-Windows.zip"
+            -DestinationPath "Desemprego-Bot-Windows.zip"
 
       - name: Publicar Release automaticamente
         uses: softprops/action-gh-release@v2
@@ -80,4 +80,4 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Desemprego Bot ${{ github.ref_name }}
           generate_release_notes: true
-          files: Desemprego-Bot-${{ github.ref_name }}-Windows.zip
+          files: Desemprego-Bot-Windows.zip
