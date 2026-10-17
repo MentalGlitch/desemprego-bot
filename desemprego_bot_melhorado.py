@@ -11,8 +11,14 @@ from pathlib import Path
 from tkinter import messagebox
 from urllib.request import Request, urlopen
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageColor, ImageTk
 import pygame
+from temas import GerenciadorTemas
+
+try:
+    from tkinterdnd2 import TkinterDnD
+except ImportError:
+    TkinterDnD = None
 
 # ============================================================
 # Desemprego Bot — os PNGs controlam o visual dos botões
@@ -52,6 +58,9 @@ CAMINHO_BOTAO1 = PASTA_RECURSOS / "botao1.png"
 CAMINHO_BOTAO2 = PASTA_RECURSOS / "botao2.png"
 CAMINHO_ICONE = PASTA_RECURSOS / "icon.ico"
 CAMINHO_CONFIG_ICON = PASTA_RECURSOS / "config.png"
+CAMINHO_CUSTOM_ICON = PASTA_RECURSOS / "custom.png"
+CAMINHO_NOTHEME = PASTA_RECURSOS / "notheme.png"
+CAMINHO_IMAGEM_POPUP_ATIVO = CAMINHO_IMAGEM_POPUP
 
 LARGURA_JANELA = 466
 # Área de conteúdo mais compacta; a barra de título do Windows fica fora dela.
@@ -64,7 +73,7 @@ COR_TEXTO = "#f4e7ff"
 COR_TEXTO_SECUNDARIO = "#e3cdfb"
 COR_BRANCO = "#fffaff"
 FONTE_PRINCIPAL = "Trebuchet MS"
-VERSAO_ATUAL = "1.0.3"
+VERSAO_ATUAL = "1.0.4"
 REPOSITORIO_GITHUB = "MentalGlitch/desemprego-bot"
 VOLUME_CLICK = 0.45
 TEMPO_PADRAO = "10"
@@ -112,13 +121,29 @@ except pygame.error as erro:
 sons = list(PASTA_AUDIOS.glob("*.wav")) + list(PASTA_AUDIOS.glob("*.mp3"))
 audios_carregados = {}
 duracoes_audios = {}
-for som_path in sons:
-    try:
-        som = pygame.mixer.Sound(str(som_path))
-        audios_carregados[som_path] = som
-        duracoes_audios[som_path] = som.get_length()
-    except Exception as erro:
-        print(f"Erro ao carregar {som_path.name}: {erro}")
+
+
+def carregar_lista_audios(lista):
+    """Troca a biblioteca de alarmes sem misturar arquivos de temas."""
+    global audios_carregados, duracoes_audios
+    novos = {}
+    duracoes = {}
+    for som_path in lista:
+        try:
+            som_path = Path(som_path)
+            if not som_path.exists():
+                continue
+            som = pygame.mixer.Sound(str(som_path))
+            novos[som_path] = som
+            duracoes[som_path] = som.get_length()
+        except Exception as erro:
+            print(f"Erro ao carregar {som_path}: {erro}")
+    audios_carregados = novos
+    duracoes_audios = duracoes
+    return len(novos)
+
+
+carregar_lista_audios(sons)
 
 
 def carregar_som_interface(nome):
@@ -218,7 +243,7 @@ def mostrar_popup_perfeito(duracao_ms, som_obj, ao_terminar=None):
 
     # Popup intencionalmente minimalista: somente a imagem, inteira e sem texto.
     try:
-        imagem_popup = Image.open(CAMINHO_IMAGEM_POPUP).convert("RGBA")
+        imagem_popup = Image.open(CAMINHO_IMAGEM_POPUP_ATIVO).convert("RGBA")
         imagem_popup.thumbnail((LARGURA_POPUP, ALTURA_POPUP), Image.Resampling.LANCZOS)
     except Exception as erro:
         print(f"Aviso: não foi possível carregar a imagem do popup: {erro}")
@@ -368,12 +393,16 @@ def oferecer_atualizacao(root, versao_nova, url_download):
 class AppAlarme:
     def __init__(self, root):
         self.root = root
+        self.CAMINHO_IMAGEM_POPUP = CAMINHO_IMAGEM_POPUP
+        self.CAMINHO_NOTHEME = CAMINHO_NOTHEME
+        self.temas = GerenciadorTemas(self, PASTA_CONFIG)
         self.root.title(f"Desemprego Bot v{VERSAO_ATUAL}")
         self.root.geometry(f"{LARGURA_JANELA}x{ALTURA_JANELA}")
         self.root.resizable(False, False)
         self.contagem_id = None
         self.alarme_ativo = False
         self.ultimo_audio = None
+        self.historico_audios = []
         self.ultimo_tempo = str(CONFIGURACOES.get("ultimo_tempo", TEMPO_PADRAO)) \
             if CONFIGURACOES.get("guardar_ultimo_tempo", False) else TEMPO_PADRAO
         self.root.protocol("WM_DELETE_WINDOW", self.fechar_app)
@@ -402,16 +431,16 @@ class AppAlarme:
         self.canvas = tk.Canvas(root, width=LARGURA_JANELA, height=ALTURA_JANELA,
                                 bg="#7625d2", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.create_image(0, 0, image=self.fundo_tk, anchor="nw")
+        self.fundo_item = self.canvas.create_image(0, 0, image=self.fundo_tk, anchor="nw")
 
         try:
             self.config_original = Image.open(CAMINHO_CONFIG_ICON).convert("RGBA")
             imagem_config = self.config_original.copy()
-            imagem_config.thumbnail((54, 54), Image.Resampling.LANCZOS)
+            imagem_config.thumbnail((80, 80), Image.Resampling.LANCZOS)
             self.config_tk = ImageTk.PhotoImage(imagem_config)
             self.config_hover_after = None
             self.config_item = self.canvas.create_image(
-                LARGURA_JANELA - 38, 38, image=self.config_tk, anchor="center",
+                LARGURA_JANELA - 46, 42, image=self.config_tk, anchor="center",
                 tags=("config_visual",)
             )
             self.canvas.tag_bind(self.config_item, "<Enter>", lambda _event: self.iniciar_hover_config())
@@ -427,16 +456,36 @@ class AppAlarme:
             )
         self.canvas.tag_bind(self.config_item, "<Button-1>", lambda _event: self.abrir_configuracoes())
 
+        self.temas_original = None
+        self.temas_tk = None
+        self.temas_item = None
+        try:
+            self.temas_original = Image.open(CAMINHO_CUSTOM_ICON).convert("RGBA")
+            imagem_temas = self.temas_original.copy()
+            imagem_temas.thumbnail((80, 80), Image.Resampling.LANCZOS)
+            self.temas_tk = ImageTk.PhotoImage(imagem_temas)
+            self.temas_item = self.canvas.create_image(
+                46, 42, image=self.temas_tk, anchor="center", tags=("temas_visual",)
+            )
+            self.canvas.tag_bind(self.temas_item, "<Enter>", lambda _event: self.atualizar_hover_temas(True))
+            self.canvas.tag_bind(self.temas_item, "<Leave>", lambda _event: self.atualizar_hover_temas(False))
+        except Exception as erro:
+            print(f"Aviso: custom.png não encontrada ou inválida: {erro}")
+        if self.temas_item:
+            self.canvas.tag_bind(self.temas_item, "<Button-1>", lambda _event: (tocar_click(), self.temas.abrir()))
+
         self.logo_tk = None
         try:
             logo = Image.open(CAMINHO_LOGO).convert("RGBA")
-            logo.thumbnail((400, 128), Image.Resampling.LANCZOS)
+            logo.thumbnail((323, 96), Image.Resampling.LANCZOS)
             self.logo_tk = ImageTk.PhotoImage(logo)
-            self.canvas.create_image(LARGURA_JANELA // 2, 84, image=self.logo_tk, anchor="center")
+            self.logo_item = self.canvas.create_image(LARGURA_JANELA // 2, 84, image=self.logo_tk, anchor="center")
+            self.logo_is_image = True
         except Exception as erro:
             print(f"Aviso: logo.png não encontrada ou inválida: {erro}")
-            self.canvas.create_text(LARGURA_JANELA // 2, 84, text="DESEMPREGO BOT",
-                                    fill="#ffd82e", font=(FONTE_PRINCIPAL, 30, "normal"))
+            self.logo_item = self.canvas.create_text(LARGURA_JANELA // 2, 84, text="DESEMPREGO BOT",
+                                                     fill="#ffd82e", font=(FONTE_PRINCIPAL, 30, "normal"))
+            self.logo_is_image = False
 
         # Fonte mais leve: normal, sem negrito grosso.
         self.titulo_status_item = self.canvas.create_text(
@@ -447,6 +496,7 @@ class AppAlarme:
         # BOTAO 1: a imagem é o design; o texto digitável fica por cima dela.
         imagem1, self.botao1_tk = carregar_png_interface(CAMINHO_BOTAO1, (280, 48))
         self.botao1_original = imagem1
+        self.botao1_base = imagem1.copy()
         self.botao1_largura = imagem1.width
         self.botao1_altura = imagem1.height
         self.botao1_x = (LARGURA_JANELA - self.botao1_largura) // 2
@@ -481,6 +531,7 @@ class AppAlarme:
         # BOTAO 2: imagem + texto sobreposto; ambos desaparecem durante a contagem.
         imagem2, self.botao2_tk = carregar_png_interface(CAMINHO_BOTAO2, (280, 48))
         self.botao2_original = imagem2
+        self.botao2_base = imagem2.copy()
         self.botao2_largura = imagem2.width
         self.botao2_altura = imagem2.height
         self.botao2_x = (LARGURA_JANELA - self.botao2_largura) // 2
@@ -513,6 +564,8 @@ class AppAlarme:
         self.hover_escala = {"botao1": 1.0, "botao2": 1.0}
         self.hover_after = {"botao1": None, "botao2": None}
         self.controles_visiveis = True
+        self.manter_icones_no_topo()
+        self.root.after(80, self.temas.aplicar_ativo)
 
     @staticmethod
     def cor_central(imagem):
@@ -525,15 +578,101 @@ class AppAlarme:
         except Exception:
             return "#8b4cde"
 
+    def atualizar_hover_temas(self, ativo):
+        if self.temas_original is None or self.temas_item is None:
+            return
+        limite = 98 if ativo else 80
+        imagem = self.temas_original.copy()
+        imagem.thumbnail((limite, limite), Image.Resampling.LANCZOS)
+        self.temas_tk = ImageTk.PhotoImage(imagem)
+        self.canvas.itemconfigure(self.temas_item, image=self.temas_tk)
+        self.canvas.coords(self.temas_item, 46, 42)
+
+    def manter_icones_no_topo(self):
+        for item in (self.temas_item, self.config_item):
+            if item:
+                self.canvas.tag_raise(item)
+
+    @staticmethod
+    def tingir_botao(imagem, cor):
+        """Aplica uma camada translúcida apenas nos pixels existentes do PNG."""
+        if not cor:
+            return imagem.copy()
+        try:
+            rgb = ImageColor.getrgb(cor)
+            camada = Image.new("RGBA", imagem.size, (*rgb, 78))
+            alpha = imagem.getchannel("A")
+            camada.putalpha(alpha.point(lambda valor: round(valor * 0.30)))
+            return Image.alpha_composite(imagem.convert("RGBA"), camada)
+        except (ValueError, TypeError):
+            return imagem.copy()
+
+    def aplicar_tema(self, tema):
+        """Aplica um tema sem reiniciar o temporizador nem alterar configurações gerais."""
+        global CAMINHO_IMAGEM_POPUP_ATIVO
+        tema_personalizado = bool(tema and tema.get("_id"))
+        caminho_base = self.temas.pasta / tema["_id"] if tema_personalizado else None
+        cor_tema = (tema.get("cor") or "#ffffff") if tema_personalizado else None
+        caminho_fundo = (caminho_base / tema["background"] if caminho_base and tema.get("background")
+                         else (caminho_base / "__sem_background__.png" if tema_personalizado else CAMINHO_FUNDO))
+        caminho_logo = (caminho_base / tema["logo"] if caminho_base and tema.get("logo")
+                        else (CAMINHO_NOTHEME if tema_personalizado else CAMINHO_LOGO))
+        caminho_popup = (caminho_base / tema["popup"] if caminho_base and tema.get("popup")
+                         else (CAMINHO_NOTHEME if tema_personalizado else CAMINHO_IMAGEM_POPUP))
+        CAMINHO_IMAGEM_POPUP_ATIVO = caminho_popup if caminho_popup.exists() else CAMINHO_IMAGEM_POPUP
+
+        self.botao1_original = self.tingir_botao(self.botao1_base, cor_tema)
+        self.botao2_original = self.tingir_botao(self.botao2_base, cor_tema)
+        self.aplicar_escala_hover("botao1", self.hover_escala["botao1"])
+        self.aplicar_escala_hover("botao2", self.hover_escala["botao2"])
+        cor_entry = self.cor_central(self.botao1_original)
+        self.entry_tempo.configure(bg=cor_entry, disabledbackground=cor_entry)
+
+        self.fundo_tk = ImageTk.PhotoImage(carregar_imagem(
+            caminho_fundo, (LARGURA_JANELA, ALTURA_JANELA), cor_tema or "#7625d2"
+        ))
+        self.canvas.itemconfigure(self.fundo_item, image=self.fundo_tk)
+        self.canvas.configure(bg=cor_tema or "#7625d2")
+        self.manter_icones_no_topo()
+        try:
+            logo = Image.open(caminho_logo).convert("RGBA")
+            logo.thumbnail((323, 96), Image.Resampling.LANCZOS)
+            novo_logo = ImageTk.PhotoImage(logo)
+            if not self.logo_is_image:
+                self.canvas.delete(self.logo_item)
+                self.logo_item = self.canvas.create_image(LARGURA_JANELA // 2, 84, image=novo_logo, anchor="center")
+                self.logo_is_image = True
+            else:
+                self.canvas.itemconfigure(self.logo_item, image=novo_logo)
+            self.logo_tk = novo_logo
+        except Exception:
+            pass
+        self.manter_icones_no_topo()
+        try:
+            rgb = ImageColor.getrgb(cor_tema) if cor_tema else (118, 37, 210)
+            texto_tema = "#35105f" if sum(rgb) / 3 > 190 else COR_TEXTO
+        except ValueError:
+            texto_tema = COR_TEXTO
+        self.canvas.itemconfigure(self.titulo_status_item, fill=texto_tema)
+        self.canvas.itemconfigure(self.exemplo_item, fill=texto_tema)
+        caminhos_audio = []
+        if caminho_base and tema.get("audios"):
+            caminhos_audio = [caminho_base / nome for nome in tema["audios"]]
+        if caminhos_audio and carregar_lista_audios(caminhos_audio) == 0:
+            carregar_lista_audios(sons)
+        elif not caminhos_audio:
+            carregar_lista_audios(sons)
+        self.historico_audios.clear()
+
     def atualizar_hover_config(self, escala):
         if self.config_original is None:
             return
         imagem = self.config_original.copy()
-        tamanho = max(32, round(54 * escala))
+        tamanho = max(44, round(80 * escala))
         imagem.thumbnail((tamanho, tamanho), Image.Resampling.LANCZOS)
         self.config_tk = ImageTk.PhotoImage(imagem)
         self.canvas.itemconfigure(self.config_item, image=self.config_tk)
-        self.canvas.coords(self.config_item, LARGURA_JANELA - 38, 38)
+        self.canvas.coords(self.config_item, LARGURA_JANELA - 46, 42)
         self.config_hover_after = None
 
     def iniciar_hover_config(self):
@@ -918,9 +1057,16 @@ class AppAlarme:
 
         opcoes_audio = list(audios_carregados.keys())
         if CONFIGURACOES.get("evitar_repeticao", False) and len(opcoes_audio) > 1:
-            opcoes_audio = [audio for audio in opcoes_audio if audio != self.ultimo_audio]
+            opcoes_audio = [audio for audio in opcoes_audio if audio not in self.historico_audios]
+            if not opcoes_audio:
+                self.historico_audios.clear()
+                opcoes_audio = list(audios_carregados.keys())
         som_path = random.choice(opcoes_audio)
         self.ultimo_audio = som_path
+        if CONFIGURACOES.get("evitar_repeticao", False):
+            self.historico_audios.append(som_path)
+            limite_historico = max(1, len(audios_carregados) - 1)
+            self.historico_audios = self.historico_audios[-limite_historico:]
         som_obj = audios_carregados[som_path]
         duracao_ms = max(1000, int(duracoes_audios[som_path] * 1000))
         self.entry_tempo.config(state="normal")
@@ -934,7 +1080,7 @@ class AppAlarme:
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    root = TkinterDnD.Tk() if TkinterDnD else tk.Tk()
     app = AppAlarme(root)
     # A consulta roda em segundo plano e não impede o programa de abrir.
     root.after(1500, lambda: verificar_atualizacao(root))
