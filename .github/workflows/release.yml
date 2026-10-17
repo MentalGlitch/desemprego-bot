@@ -34,6 +34,7 @@ jobs:
         run: |
           $necessarios = @(
             "desemprego_bot_melhorado.py",
+            "temas.py",
             "atualizador.py",
             "imagem.png",
             "audios",
@@ -54,6 +55,7 @@ jobs:
             --name "Desemprego Bot" `
             --icon "programa_image\icon.ico" `
             --collect-all pygame `
+            --hidden-import tkinterdnd2 `
             --add-data "audios;audios" `
             --add-data "programa_image;programa_image" `
             --add-data "imagem.png;." `
